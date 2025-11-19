@@ -19,6 +19,14 @@
                 </h1>
             </div>
             <div class="header-center">
+                <nav class="tab-nav">
+                    <button class="tab-btn active" data-tab="dashboard" id="tab-dashboard">
+                        <span class="tab-icon">📊</span> Dashboard
+                    </button>
+                    <button class="tab-btn" data-tab="brain" id="tab-brain">
+                        <span class="tab-icon">🧠</span> Brain
+                    </button>
+                </nav>
                 <div class="status-indicator">
                     <div class="status-dot" id="connection-status"></div>
                     <span id="connection-text">Connecting...</span>
@@ -38,8 +46,10 @@
 
         <!-- Main Content Grid -->
         <div class="content">
-            <!-- Left Panel: Agent Grid -->
-            <aside class="agents-panel">
+            <!-- Dashboard View (Default) -->
+            <div class="view-container active" id="view-dashboard">
+                <!-- Left Panel: Agent Grid -->
+                <aside class="agents-panel">
                 <div class="panel-header">
                     <h2>Agent Pool <span class="agent-count" id="agent-count">0/100</span></h2>
                     <div class="legend">
@@ -102,6 +112,89 @@
                     </div>
                 </section>
             </main>
+            </div>
+            <!-- End Dashboard View -->
+
+            <!-- Brain View (Genetic Memory) -->
+            <div class="view-container" id="view-brain" style="display: none;">
+                <div class="brain-layout">
+                    <!-- Agent Type Selector -->
+                    <div class="brain-header">
+                        <div class="brain-title">
+                            <h2>🧠 Genetic Memory - Prompt Evolution</h2>
+                            <p class="brain-subtitle">Track and manage prompt versions across all agents</p>
+                        </div>
+                        <div class="agent-selector">
+                            <label for="agent-type-select">Agent Type:</label>
+                            <select id="agent-type-select" class="agent-select">
+                                <option value="architect_agent">🏗️ Architect Agent</option>
+                                <option value="coder_agent">💻 Coder Agent</option>
+                                <option value="qa_agent">🧪 QA Agent</option>
+                                <option value="verifier_agent">✓ Verifier Agent</option>
+                                <option value="asset_agent">📦 Asset Agent</option>
+                                <option value="meta_agent">🎯 Meta Agent</option>
+                            </select>
+                            <button class="btn btn-primary" id="refresh-brain-btn">
+                                <span class="btn-icon">↻</span> Refresh
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Performance Overview Cards -->
+                    <div class="brain-overview">
+                        <div class="overview-card">
+                            <div class="overview-label">Current Version</div>
+                            <div class="overview-value" id="brain-current-version">-</div>
+                            <div class="overview-meta" id="brain-current-score">-</div>
+                        </div>
+                        <div class="overview-card success">
+                            <div class="overview-label">Best Version</div>
+                            <div class="overview-value" id="brain-best-version">-</div>
+                            <div class="overview-meta" id="brain-best-score">-</div>
+                        </div>
+                        <div class="overview-card">
+                            <div class="overview-label">Total Versions</div>
+                            <div class="overview-value" id="brain-total-versions">-</div>
+                            <div class="overview-meta" id="brain-trend">-</div>
+                        </div>
+                        <div class="overview-card">
+                            <div class="overview-label">Avg Performance</div>
+                            <div class="overview-value" id="brain-avg-score">-</div>
+                            <div class="overview-meta" id="brain-score-range">-</div>
+                        </div>
+                    </div>
+
+                    <!-- Version Timeline -->
+                    <div class="brain-section">
+                        <div class="section-header">
+                            <h3>Version History</h3>
+                            <div class="section-actions">
+                                <button class="btn btn-sm" id="compare-versions-btn" disabled>
+                                    <span class="btn-icon">⚖</span> Compare
+                                </button>
+                            </div>
+                        </div>
+                        <div class="version-timeline" id="version-timeline">
+                            <div class="empty-state">
+                                <div class="empty-icon">🧬</div>
+                                <p>No version history available</p>
+                                <small>Select an agent type to view its evolution</small>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Performance Chart -->
+                    <div class="brain-section">
+                        <div class="section-header">
+                            <h3>Performance Evolution</h3>
+                        </div>
+                        <div class="performance-chart" id="performance-chart">
+                            <canvas id="perf-chart-canvas"></canvas>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <!-- End Brain View -->
         </div>
 
         <!-- Bottom Panel: Live Activity Log -->
@@ -238,6 +331,154 @@
             </div>
         </div>
     </div>
+
+    <!-- Brain Version Modal -->
+    <div class="modal" id="brain-modal" style="display: none;">
+        <div class="modal-overlay"></div>
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 class="modal-title" id="brain-modal-title">Version Details</h2>
+                <button class="modal-close" id="brain-modal-close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <!-- Version Info -->
+                <div class="modal-section">
+                    <h3>Version Information</h3>
+                    <div class="info-grid">
+                        <div class="info-item">
+                            <span class="info-label">Version:</span>
+                            <span class="info-value" id="brain-version-num">-</span>
+                        </div>
+                        <div class="info-item">
+                            <span class="info-label">Agent Type:</span>
+                            <span class="info-value" id="brain-agent-type">-</span>
+                        </div>
+                        <div class="info-item">
+                            <span class="info-label">Status:</span>
+                            <span class="info-value badge" id="brain-status">-</span>
+                        </div>
+                        <div class="info-item">
+                            <span class="info-label">Changed By:</span>
+                            <span class="info-value" id="brain-changed-by">-</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Performance Metrics -->
+                <div class="modal-section">
+                    <h3>Performance Metrics</h3>
+                    <div class="metrics-grid">
+                        <div class="metric-item">
+                            <span class="metric-label">Performance Score:</span>
+                            <span class="metric-value" id="brain-perf-score">-</span>
+                        </div>
+                        <div class="metric-item">
+                            <span class="metric-label">Success Rate:</span>
+                            <span class="metric-value" id="brain-success-rate">-</span>
+                        </div>
+                        <div class="metric-item">
+                            <span class="metric-label">Avg Cost:</span>
+                            <span class="metric-value" id="brain-avg-cost">-</span>
+                        </div>
+                        <div class="metric-item">
+                            <span class="metric-label">Avg Duration:</span>
+                            <span class="metric-value" id="brain-avg-duration">-</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Change Reason -->
+                <div class="modal-section">
+                    <h3>Change Reason</h3>
+                    <div class="change-reason" id="brain-change-reason">
+                        <p>-</p>
+                    </div>
+                </div>
+
+                <!-- Prompt Content -->
+                <div class="modal-section">
+                    <h3>
+                        <button class="collapsible-toggle" id="brain-prompt-toggle">
+                            Prompt Content <span class="toggle-icon">▼</span>
+                        </button>
+                    </h3>
+                    <div class="prompt-content" id="brain-prompt-content" style="display: none;">
+                        <pre><code id="brain-prompt-code">-</code></pre>
+                    </div>
+                </div>
+
+                <!-- Shadow Test Results -->
+                <div class="modal-section" id="brain-shadow-section" style="display: none;">
+                    <h3>Shadow Test Results</h3>
+                    <div class="shadow-results" id="brain-shadow-results">
+                        <div class="shadow-item">
+                            <span class="shadow-label">Test Count:</span>
+                            <span class="shadow-value" id="brain-shadow-count">-</span>
+                        </div>
+                        <div class="shadow-item">
+                            <span class="shadow-label">Success Rate:</span>
+                            <span class="shadow-value" id="brain-shadow-rate">-</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Rollback Info (if applicable) -->
+                <div class="modal-section" id="brain-rollback-section" style="display: none;">
+                    <h3>Rollback Information</h3>
+                    <div class="rollback-info" id="brain-rollback-info">
+                        <p id="brain-rollback-text">-</p>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" id="brain-close-btn">
+                    Close
+                </button>
+                <button class="btn btn-warning" id="brain-rollback-btn" style="display: none;">
+                    <span class="btn-icon">↶</span> Rollback to This Version
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Version Card Template -->
+    <template id="version-card-template">
+        <div class="version-card" data-version="">
+            <div class="version-header">
+                <div class="version-number">v<span class="version-num"></span></div>
+                <div class="version-status"></div>
+            </div>
+            <div class="version-body">
+                <div class="version-meta">
+                    <span class="version-date"></span>
+                    <span class="version-author"></span>
+                </div>
+                <div class="version-reason"></div>
+                <div class="version-metrics">
+                    <div class="metric">
+                        <span class="metric-label">Score:</span>
+                        <span class="metric-value score"></span>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-label">Success:</span>
+                        <span class="metric-value success"></span>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-label">Cost:</span>
+                        <span class="metric-value cost"></span>
+                    </div>
+                </div>
+            </div>
+            <div class="version-actions">
+                <button class="btn btn-sm btn-view" data-action="view">
+                    <span class="btn-icon">👁</span> View
+                </button>
+                <button class="btn btn-sm btn-rollback" data-action="rollback" style="display: none;">
+                    <span class="btn-icon">↶</span> Rollback
+                </button>
+            </div>
+        </div>
+    </template>
 
     <!-- Scripts -->
     <script src="app.js"></script>
