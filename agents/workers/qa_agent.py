@@ -231,8 +231,8 @@ class QAAgent(BaseAgent):
             validated_tasks = []
             for task_def in tasks:
                 confidence = self._calculate_confidence(task_def)
-                task_def.metadata['confidence_score'] = confidence
-                task_def.metadata['auto_merge_eligible'] = (
+                task_def.context['confidence_score'] = confidence
+                task_def.context['auto_merge_eligible'] = (
                     confidence >= self.auto_merge_confidence_threshold
                 )
                 validated_tasks.append(task_def)
@@ -240,7 +240,7 @@ class QAAgent(BaseAgent):
             # Calculate overall confidence
             if validated_tasks:
                 avg_confidence = sum(
-                    t.metadata.get('confidence_score', 0) for t in validated_tasks
+                    t.context.get('confidence_score', 0) for t in validated_tasks
                 ) / len(validated_tasks)
             else:
                 avg_confidence = 0.0
@@ -252,7 +252,7 @@ class QAAgent(BaseAgent):
                     "average_confidence": avg_confidence,
                     "auto_merge_count": sum(
                         1 for t in validated_tasks
-                        if t.metadata.get('auto_merge_eligible', False)
+                        if t.context.get('auto_merge_eligible', False)
                     )
                 },
                 metadata={"agent_id": self.agent_id,
@@ -305,24 +305,22 @@ class QAAgent(BaseAgent):
             task_type=TaskType.IMPLEMENTATION,
             priority=self._severity_to_priority(context.get('severity')),
             assigned_agent="ArchitectAgent",  # Will be assigned to Architect
-            description=f"Fix {exception_type}: {message}",
             context={
+                "description": f"Fix {exception_type}: {message}",
                 "exception_type": exception_type,
                 "error_message": message,
                 "stack_trace": stack_trace,
                 "file_location": file_location,
                 "frequency": crash_data.get('frequency', 1),
-                "affected_users": crash_data.get('affected_users', 0)
+                "affected_users": crash_data.get('affected_users', 0),
+                "report_type": "crash",
+                "severity": context.get('severity'),
+                "source": "modl_ai"
             },
             requirements={
                 "fix_type": "null_check" if "null" in exception_type.lower() else "general",
                 "test_coverage_required": True,
                 "verify_no_regression": True
-            },
-            metadata={
-                "report_type": "crash",
-                "severity": context.get('severity'),
-                "source": "modl_ai"
             }
         )
 
@@ -344,24 +342,22 @@ class QAAgent(BaseAgent):
             task_type=TaskType.REFACTORING,
             priority=self._severity_to_priority(context.get('severity')),
             assigned_agent="ArchitectAgent",  # Will be assigned to Architect
-            description=f"Adjust {metric_name} balance (Expected: {expected}, Actual: {actual})",
             context={
+                "description": f"Adjust {metric_name} balance (Expected: {expected}, Actual: {actual})",
                 "metric_name": metric_name,
                 "expected_value": expected,
                 "actual_value": actual,
                 "deviation": balance_data.get('deviation_percent'),
                 "suggested_fix": suggested_fix,
-                "context": balance_data.get('context', '')
+                "context": balance_data.get('context', ''),
+                "report_type": "balance",
+                "severity": context.get('severity'),
+                "source": "modl_ai"
             },
             requirements={
                 "test_new_balance": True,
                 "verify_player_feedback": True,
                 "config_based_fix": True  # Prefer config changes over code
-            },
-            metadata={
-                "report_type": "balance",
-                "severity": context.get('severity'),
-                "source": "modl_ai"
             }
         )
 
@@ -383,23 +379,21 @@ class QAAgent(BaseAgent):
             task_type=TaskType.REFACTORING,
             priority=self._severity_to_priority(context.get('severity')),
             assigned_agent="ArchitectAgent",  # Will be assigned to Architect
-            description=f"Optimize {metric_type} in {location} (Target: {threshold}, Current: {measured})",
             context={
+                "description": f"Optimize {metric_type} in {location} (Target: {threshold}, Current: {measured})",
                 "metric_type": metric_type,
                 "threshold": threshold,
                 "measured_value": measured,
                 "location": location,
-                "duration": perf_data.get('duration_seconds', 0)
+                "duration": perf_data.get('duration_seconds', 0),
+                "report_type": "performance",
+                "severity": context.get('severity'),
+                "source": "modl_ai"
             },
             requirements={
                 "performance_test_required": True,
                 "profile_before_after": True,
                 "verify_no_regression": True
-            },
-            metadata={
-                "report_type": "performance",
-                "severity": context.get('severity'),
-                "source": "modl_ai"
             }
         )
 
@@ -421,25 +415,23 @@ class QAAgent(BaseAgent):
             task_type=TaskType.IMPLEMENTATION,
             priority=self._severity_to_priority(context.get('severity')),
             assigned_agent="ArchitectAgent",  # Will be assigned to Architect
-            description=f"Fix failing test: {test_name}",
             context={
+                "description": f"Fix failing test: {test_name}",
                 "test_name": test_name,
                 "test_type": test_data.get('test_type', 'unit'),
                 "failure_message": failure_msg,
                 "expected": test_data.get('expected'),
                 "actual": test_data.get('actual'),
                 "file_path": file_path,
-                "line_number": line_number
+                "line_number": line_number,
+                "report_type": "test_failure",
+                "severity": context.get('severity'),
+                "source": "modl_ai"
             },
             requirements={
                 "fix_test_or_code": True,  # Either test is wrong or code is wrong
                 "verify_related_tests": True,
                 "maintain_coverage": True
-            },
-            metadata={
-                "report_type": "test_failure",
-                "severity": context.get('severity'),
-                "source": "modl_ai"
             }
         )
 
@@ -463,7 +455,7 @@ class QAAgent(BaseAgent):
         score = 50.0  # Base confidence
 
         # Severity factor
-        severity = task.metadata.get('severity', Severity.MEDIUM)
+        severity = task.context.get('severity', Severity.MEDIUM)
         severity_scores = {
             Severity.CRITICAL: -20,
             Severity.HIGH: -10,
@@ -529,6 +521,7 @@ class QAAgent(BaseAgent):
 
         # Try to find file:line patterns
         patterns = [
+            r'in\s+([\w/\\.]+\.[\w]+):line\s+(\d+)',  # C# style with "in"
             r'at\s+([\w/\\.]+\.[\w]+):line\s+(\d+)',  # C# style
             r'File\s+"([\w/\\.]+\.[\w]+)",\s+line\s+(\d+)',  # Python style
             r'([\w/\\.]+\.[\w]+):(\d+)',  # Generic style
@@ -575,10 +568,11 @@ class QAAgent(BaseAgent):
             task_type=TaskType.TESTING,
             priority=5,
             assigned_agent=self.agent_id,
-            description="QA Report Analysis",
-            context={"report": report.model_dump()},
-            requirements={},
-            metadata={}
+            context={
+                "description": "QA Report Analysis",
+                "report": report.model_dump()
+            },
+            requirements={}
         )
 
         # Phase 1: Gather context

@@ -140,10 +140,10 @@ class TestQAAgent:
         assert len(tasks) > 0
         task = tasks[0]
         assert task.task_type == TaskType.IMPLEMENTATION
-        assert "NullReferenceException" in task.description
+        assert "NullReferenceException" in task.context.get('description', '')
         assert task.context['exception_type'] == "NullReferenceException"
-        assert 'confidence_score' in task.metadata
-        assert 'auto_merge_eligible' in task.metadata
+        assert 'confidence_score' in task.context
+        assert 'auto_merge_eligible' in task.context
 
     def test_analyze_balance_report(self, qa_agent, balance_report):
         """Test QA Agent analyzing balance report."""
@@ -152,7 +152,7 @@ class TestQAAgent:
         assert len(tasks) > 0
         task = tasks[0]
         assert task.task_type == TaskType.REFACTORING
-        assert "enemy_difficulty" in task.description
+        assert "enemy_difficulty" in task.context.get('description', '')
         assert task.context['metric_name'] == "enemy_difficulty"
         assert task.context['expected_value'] == 50.0
         assert task.context['actual_value'] == 85.0
@@ -164,7 +164,7 @@ class TestQAAgent:
         assert len(tasks) > 0
         task = tasks[0]
         assert task.task_type == TaskType.IMPLEMENTATION
-        assert "test_enemy_spawn_rate" in task.description
+        assert "test_enemy_spawn_rate" in task.context.get('description', '')
         assert task.context['test_name'] == "test_enemy_spawn_rate"
         assert task.context['test_type'] == "unit"
 
@@ -173,7 +173,7 @@ class TestQAAgent:
         tasks = qa_agent.analyze_report(crash_report)
 
         assert len(tasks) > 0
-        confidence = tasks[0].metadata['confidence_score']
+        confidence = tasks[0].context['confidence_score']
 
         # Crash with clear stack trace should have decent confidence
         assert 0 <= confidence <= 100
@@ -185,7 +185,7 @@ class TestQAAgent:
         tasks = qa_agent.analyze_report(balance_report)
 
         assert len(tasks) > 0
-        confidence = tasks[0].metadata['confidence_score']
+        confidence = tasks[0].context['confidence_score']
 
         # Balance fixes with suggested fix should have higher confidence
         assert 0 <= confidence <= 100
@@ -241,7 +241,7 @@ class TestQAAgent:
         tasks = qa_agent.analyze_report(report)
         assert len(tasks) > 0
 
-        confidence = tasks[0].metadata['confidence_score']
+        confidence = tasks[0].context['confidence_score']
         # Should have high confidence due to:
         # - Low severity
         # - Single occurrence

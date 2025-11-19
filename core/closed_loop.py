@@ -14,6 +14,7 @@ This is the final piece for self-healing capability.
 
 import asyncio
 import logging
+import uuid
 from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime
 from enum import Enum
@@ -167,8 +168,8 @@ class ClosedLoopManager:
         Returns:
             ClosedLoopCycle tracking the fix process
         """
-        # Generate cycle ID
-        cycle_id = f"loop_{int(datetime.utcnow().timestamp())}_{report.report_type.value}"
+        # Generate cycle ID (use UUID to ensure uniqueness for concurrent calls)
+        cycle_id = f"loop_{report.report_type.value}_{uuid.uuid4().hex[:8]}"
 
         logger.info(
             f"🔄 Starting closed loop cycle: {cycle_id} "
@@ -240,7 +241,7 @@ class ClosedLoopManager:
         # Calculate average confidence
         if tasks:
             avg_confidence = sum(
-                t.metadata.get('confidence_score', 0) for t in tasks
+                t.context.get('confidence_score', 0) for t in tasks
             ) / len(tasks)
         else:
             avg_confidence = 0.0
@@ -416,7 +417,7 @@ class ClosedLoopManager:
         await asyncio.sleep(0.1)  # Simulate test execution
 
         # Simulate test results based on confidence score
-        confidence = task.metadata.get('confidence_score', 50)
+        confidence = task.context.get('confidence_score', 50)
         tests_pass = confidence > 60  # Higher confidence = more likely to pass
 
         return {
@@ -448,11 +449,11 @@ class ClosedLoopManager:
         logger.info(f"✅ Auto-approving {len(tasks)} tasks in database...")
 
         # TODO: Update database to mark tasks as approved
-        # For now, just update metadata
+        # For now, just update context
         for task in tasks:
-            task.metadata['auto_approved'] = True
-            task.metadata['approved_at'] = datetime.utcnow().isoformat()
-            task.metadata['approved_by'] = 'ClosedLoopManager'
+            task.context['auto_approved'] = True
+            task.context['approved_at'] = datetime.utcnow().isoformat()
+            task.context['approved_by'] = 'ClosedLoopManager'
 
     async def _request_hotl_review(self, cycle: ClosedLoopCycle) -> None:
         """Request HOTL review via dashboard."""
