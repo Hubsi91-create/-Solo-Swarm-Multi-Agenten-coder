@@ -140,3 +140,7 @@ logs/
 
 # Redis
 dump.rdb
+
+# Generated Assets
+temp_assets/
+test_assets_*/
