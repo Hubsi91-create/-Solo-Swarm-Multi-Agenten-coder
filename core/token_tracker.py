@@ -1,11 +1,16 @@
 """
 Token Tracker - Token Counting and Cost Calculation
 Tracks API usage and calculates costs for Claude models
+
+Phase 4 Enhancement: Hard Limit Checking
+- Integration with CostLogModel for persistent cost tracking
+- Daily cost aggregation from database
+- Hard limit safety checks with automatic shutdown trigger
 """
 
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import Enum
 import logging
 
@@ -121,14 +126,24 @@ class TokenTracker:
 
     This class maintains a history of all API calls and provides
     methods for cost calculation and usage analysis.
+
+    Phase 4 Enhancement: Now includes hard limit checking and database integration.
     """
 
-    def __init__(self):
-        """Initialize the token tracker"""
+    def __init__(self, db_session: Optional[Any] = None):
+        """
+        Initialize the token tracker.
+
+        Args:
+            db_session: Optional async database session for cost log queries
+        """
         self.usage_records: List[UsageRecord] = []
         self.total_input_tokens: int = 0
         self.total_output_tokens: int = 0
         self.total_cost_usd: float = 0.0
+
+        # Database session for persistent cost tracking
+        self.db_session = db_session
 
         logger.info("TokenTracker initialized")
 
@@ -314,10 +329,205 @@ class TokenTracker:
         summary = self.get_summary()
         return summary.by_model
 
+    async def get_daily_cost(self, date: Optional[datetime] = None) -> float:
+        """
+        Get total cost for a specific day from the database.
+
+        This queries the CostLogModel to get the actual cumulative cost
+        for budget tracking and hard limit checks.
+
+        Args:
+            date: Date to query (defaults to today)
+
+        Returns:
+            Total cost in USD for the specified day
+
+        Raises:
+            RuntimeError: If database session is not configured
+        """
+        if not self.db_session:
+            logger.warning(
+                "No database session configured. "
+                "Falling back to in-memory tracker (may be inaccurate)."
+            )
+            return self.total_cost_usd
+
+        # Import here to avoid circular dependencies
+        try:
+            from sqlalchemy import select, func
+            from infrastructure.database import CostLogModel
+        except ImportError as e:
+            logger.error(f"Failed to import database models: {e}")
+            return self.total_cost_usd
+
+        # Use today if no date specified
+        if date is None:
+            date = datetime.utcnow()
+
+        # Get start and end of day
+        start_of_day = datetime(date.year, date.month, date.day, 0, 0, 0)
+        end_of_day = datetime(date.year, date.month, date.day, 23, 59, 59)
+
+        try:
+            # Query database for total cost in the date range
+            query = select(func.sum(CostLogModel.cost_usd)).where(
+                CostLogModel.timestamp >= start_of_day,
+                CostLogModel.timestamp <= end_of_day
+            )
+
+            result = await self.db_session.execute(query)
+            total_cost = result.scalar()
+
+            # Handle None result (no records for this day)
+            if total_cost is None:
+                total_cost = 0.0
+
+            logger.info(
+                f"Daily cost for {date.strftime('%Y-%m-%d')}: ${total_cost:.4f}"
+            )
+
+            return float(total_cost)
+
+        except Exception as e:
+            logger.error(f"Failed to query daily cost from database: {e}")
+            # Fallback to in-memory tracker
+            return self.total_cost_usd
+
+    async def check_hard_limit(self, daily_limit: float) -> Tuple[bool, Dict[str, Any]]:
+        """
+        Check if current daily cost exceeds the hard limit.
+
+        This is a critical safety check. If the limit is exceeded,
+        the system should trigger an emergency shutdown.
+
+        Args:
+            daily_limit: Maximum allowed daily cost in USD
+
+        Returns:
+            Tuple of (limit_exceeded: bool, details: dict)
+            - limit_exceeded: True if limit is exceeded
+            - details: Dictionary with cost information and limit status
+
+        Example:
+            exceeded, details = await tracker.check_hard_limit(15.00)
+            if exceeded:
+                # Trigger emergency shutdown
+                await emergency_shutdown.stop_all_agents(
+                    reason=ShutdownReason.BUDGET_EXCEEDED,
+                    details=details
+                )
+        """
+        # Get actual daily cost from database
+        daily_cost = await self.get_daily_cost()
+
+        # Calculate remaining budget
+        remaining_budget = daily_limit - daily_cost
+
+        # Check if limit exceeded
+        limit_exceeded = daily_cost >= daily_limit
+
+        # Calculate utilization percentage
+        utilization_pct = (daily_cost / daily_limit * 100) if daily_limit > 0 else 0
+
+        details = {
+            "daily_cost_usd": round(daily_cost, 4),
+            "daily_limit_usd": round(daily_limit, 4),
+            "remaining_budget_usd": round(remaining_budget, 4),
+            "utilization_percent": round(utilization_pct, 2),
+            "limit_exceeded": limit_exceeded,
+            "checked_at": datetime.utcnow().isoformat(),
+            "date": datetime.utcnow().strftime("%Y-%m-%d")
+        }
+
+        if limit_exceeded:
+            logger.critical(
+                f"🚨 HARD LIMIT EXCEEDED! 🚨\n"
+                f"Daily Cost: ${daily_cost:.4f}\n"
+                f"Daily Limit: ${daily_limit:.4f}\n"
+                f"Overage: ${daily_cost - daily_limit:.4f}\n"
+                f"Emergency shutdown should be triggered immediately!"
+            )
+        elif utilization_pct >= 90:
+            logger.warning(
+                f"⚠️  Budget utilization at {utilization_pct:.1f}%\n"
+                f"Daily Cost: ${daily_cost:.4f} / ${daily_limit:.4f}\n"
+                f"Remaining: ${remaining_budget:.4f}"
+            )
+        elif utilization_pct >= 75:
+            logger.info(
+                f"Budget utilization at {utilization_pct:.1f}% "
+                f"(${daily_cost:.4f} / ${daily_limit:.4f})"
+            )
+
+        return limit_exceeded, details
+
+    async def get_cost_summary(self, days: int = 7) -> Dict[str, Any]:
+        """
+        Get cost summary for the last N days from database.
+
+        Args:
+            days: Number of days to include in summary
+
+        Returns:
+            Dictionary with cost statistics by day
+        """
+        if not self.db_session:
+            logger.warning("No database session configured")
+            return {"error": "Database not configured"}
+
+        try:
+            from sqlalchemy import select, func
+            from infrastructure.database import CostLogModel
+        except ImportError as e:
+            logger.error(f"Failed to import database models: {e}")
+            return {"error": str(e)}
+
+        summary = {
+            "days": days,
+            "daily_costs": [],
+            "total_cost": 0.0,
+            "average_daily_cost": 0.0
+        }
+
+        # Get costs for each day
+        for day_offset in range(days):
+            date = datetime.utcnow() - timedelta(days=day_offset)
+            daily_cost = await self.get_daily_cost(date)
+
+            summary["daily_costs"].append({
+                "date": date.strftime("%Y-%m-%d"),
+                "cost_usd": round(daily_cost, 4)
+            })
+
+            summary["total_cost"] += daily_cost
+
+        # Calculate average
+        if days > 0:
+            summary["average_daily_cost"] = round(summary["total_cost"] / days, 4)
+
+        summary["total_cost"] = round(summary["total_cost"], 4)
+
+        return summary
+
+    def set_db_session(self, db_session: Any) -> None:
+        """
+        Set or update the database session.
+
+        This allows the tracker to be initialized without a session
+        and have one added later.
+
+        Args:
+            db_session: Async database session
+        """
+        self.db_session = db_session
+        logger.info("Database session configured for TokenTracker")
+
     def __repr__(self) -> str:
+        db_status = "DB-enabled" if self.db_session else "memory-only"
         return (
             f"TokenTracker("
             f"records={len(self.usage_records)}, "
             f"total_tokens={self.total_input_tokens + self.total_output_tokens}, "
-            f"total_cost=${self.total_cost_usd:.6f})"
+            f"total_cost=${self.total_cost_usd:.6f}, "
+            f"mode={db_status})"
         )
