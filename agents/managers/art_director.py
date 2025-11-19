@@ -476,6 +476,133 @@ class ArtDirector(BaseAgent):
 
         return task
 
+    def handle_verification_failure(
+        self,
+        failure_report: Dict[str, Any],
+        original_task: TaskDefinition
+    ) -> TaskDefinition:
+        """
+        Handle asset verification failure by creating a corrected task.
+
+        Analyzes validation issues and generates a new task with adjusted
+        prompts and constraints to fix the problems.
+
+        Args:
+            failure_report: Validation failure report with metrics and issues
+            original_task: The original asset generation task
+
+        Returns:
+            New TaskDefinition with corrected requirements
+        """
+        logger.info("ArtDirector handling verification failure")
+
+        # Extract information from original task
+        original_description = original_task.context.get("asset_description", "")
+        original_style = original_task.context.get("style_prompt", "")
+        asset_name = original_task.context.get("asset_name", "Asset")
+
+        # Extract validation issues
+        issues = failure_report.get("issues", [])
+        metrics = failure_report.get("metrics", {})
+
+        logger.info(f"Validation issues: {issues}")
+
+        # Analyze issues and build corrections
+        corrections = []
+        adjusted_requirements = {}
+
+        for issue in issues:
+            issue_lower = issue.lower()
+
+            # Triangle count too high
+            if "triangle count" in issue_lower or "poly" in issue_lower:
+                triangle_count = metrics.get("triangle_count", 0)
+                # Extract max from constraints or use default
+                constraints = failure_report.get("constraints", {})
+                max_allowed = constraints.get("max_triangles", 50000)
+                # Target is 70% of maximum allowed (to leave safety margin)
+                target = int(max_allowed * 0.7)
+                corrections.append(f"Reduce polygon count to approximately {target} triangles")
+                adjusted_requirements["max_triangles"] = target
+
+            # Missing UV map
+            elif "uv map" in issue_lower:
+                corrections.append("Ensure proper UV mapping is applied")
+                adjusted_requirements["require_uv_map"] = True
+
+            # Dimensions too large
+            elif "max dimension" in issue_lower:
+                max_dim = metrics.get("dimensions", {}).get("max", 100)
+                target = max_dim * 0.8  # Reduce by 20%
+                corrections.append(f"Scale down to maximum {target:.1f} units")
+                adjusted_requirements["max_dimensions"] = target
+
+            # Dimensions too small
+            elif "min dimension" in issue_lower:
+                min_dim = metrics.get("dimensions", {}).get("min", 0)
+                target = min_dim * 1.5  # Increase by 50%
+                corrections.append(f"Scale up to minimum {target:.1f} units")
+                adjusted_requirements["min_dimensions"] = target
+
+            # Too many materials
+            elif "material count" in issue_lower:
+                mat_count = metrics.get("material_count", 0)
+                target = max(mat_count - 2, 1)
+                corrections.append(f"Reduce to {target} materials or fewer")
+                adjusted_requirements["max_materials"] = target
+
+        # Build corrected prompt
+        if corrections:
+            correction_text = ". ".join(corrections)
+            corrected_description = f"{original_description}. CORRECTIONS: {correction_text}"
+        else:
+            corrected_description = f"{original_description}. Regenerate with improved quality"
+
+        # Track token usage for analysis (Sonnet)
+        input_tokens = len(str(failure_report)) // 4 + 100
+        output_tokens = len(corrected_description) // 4
+
+        cost = self.token_tracker.track_usage(
+            model=ModelType.SONNET_3_5,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            metadata={
+                "agent_id": self.agent_id,
+                "operation": "handle_verification_failure",
+                "original_task_id": original_task.task_id
+            }
+        )
+
+        # Create new task
+        retry_task_id = f"{original_task.task_id}_retry_{datetime.utcnow().strftime('%H%M%S')}"
+
+        retry_task = TaskDefinition(
+            task_id=retry_task_id,
+            task_type=TaskType.IMPLEMENTATION,
+            priority=1,  # High priority for retries
+            assigned_agent="asset_agent",
+            context={
+                "asset_description": corrected_description,
+                "asset_name": f"{asset_name} (Retry)",
+                "style_prompt": original_style,
+                "original_task_id": original_task.task_id,
+                "retry": True,
+                "correction_reason": corrections
+            },
+            requirements={
+                **original_task.requirements,
+                **adjusted_requirements,
+                "is_retry": True
+            }
+        )
+
+        logger.info(
+            f"Created retry task {retry_task_id} with {len(corrections)} corrections, "
+            f"cost: ${cost:.4f}"
+        )
+
+        return retry_task
+
     def __repr__(self) -> str:
         return (
             f"ArtDirector(id='{self.agent_id}', "
