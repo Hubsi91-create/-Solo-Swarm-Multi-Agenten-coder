@@ -6,13 +6,18 @@ Uses Sonnet 3.5 for complex reasoning and task decomposition
 from typing import Dict, Any, Optional, List
 import json
 import logging
+import subprocess
+import tempfile
+import os
 from datetime import datetime
+from pathlib import Path
 
 from core.agent_framework import BaseAgent, AgentResponse, AgentError
 from core.tdf_schema import TaskDefinition, TaskType
 from core.token_tracker import TokenTracker, ModelType
 from core.context_manager import ContextManager
 from core.claude_md_manager import CLAUDEMDManager, AgentRole
+from core.self_correction import SelfCorrectionManager
 
 
 logger = logging.getLogger(__name__)
@@ -58,6 +63,7 @@ class ArchitectAgent(BaseAgent):
         self.token_tracker = token_tracker or TokenTracker()
         self.context_manager = context_manager or ContextManager()
         self.claude_md_manager = claude_md_manager or CLAUDEMDManager()
+        self.self_correction_manager = SelfCorrectionManager(max_retries=3)
 
         # Agent-specific configuration
         self.max_tasks_per_plan = self.config.get("max_tasks_per_plan", 50)
@@ -534,6 +540,262 @@ Output the plan as JSON following this structure:
                     return False
 
         return True
+
+    def integrate_and_test(
+        self,
+        worker_results: List[Dict[str, Any]],
+        test_file_path: Optional[str] = None,
+        code_file_path: Optional[str] = None
+    ) -> AgentResponse:
+        """
+        Integrate worker results and run tests with self-correction loop.
+
+        This method implements the end-to-end pipeline:
+        1. Merge code snippets from worker results
+        2. Write merged code to file
+        3. Run pytest on the generated code
+        4. If tests fail: Use SelfCorrectionManager to generate bugfix tasks
+        5. Retry up to max_retries times
+        6. Return success or failure
+
+        Args:
+            worker_results: List of worker execution results
+            test_file_path: Optional path to test file (for validation)
+            code_file_path: Optional path to write generated code
+
+        Returns:
+            AgentResponse with integration results
+        """
+        logger.info("Starting integrate_and_test pipeline...")
+
+        try:
+            # Step 1: Merge worker results
+            merged_code = self._merge_worker_results(worker_results)
+
+            if not merged_code:
+                return AgentResponse(
+                    success=False,
+                    error=AgentError(
+                        error_type="merge_failed",
+                        message="Failed to merge worker results - no code generated",
+                        timestamp=datetime.utcnow(),
+                        context={"worker_count": len(worker_results)},
+                        recoverable=False
+                    )
+                )
+
+            logger.info(f"Merged code: {len(merged_code)} characters")
+
+            # Step 2: Write code to temporary or specified file
+            if code_file_path:
+                target_file = code_file_path
+            else:
+                # Create temporary file
+                temp_fd, target_file = tempfile.mkstemp(suffix=".py", prefix="generated_")
+                os.close(temp_fd)
+
+            with open(target_file, 'w') as f:
+                f.write(merged_code)
+
+            logger.info(f"Code written to: {target_file}")
+
+            # Step 3: Run tests with self-correction loop
+            max_iterations = self.self_correction_manager.max_retries + 1
+            iteration = 0
+            test_passed = False
+            test_output = ""
+            bugfix_tasks: List[TaskDefinition] = []
+
+            while iteration < max_iterations and not test_passed:
+                logger.info(f"Test iteration {iteration + 1}/{max_iterations}")
+
+                # Run tests
+                test_result = self._run_tests(target_file, test_file_path)
+                test_output = test_result["output"]
+                test_passed = test_result["success"]
+
+                if test_passed:
+                    logger.info(f"Tests passed on iteration {iteration + 1}")
+                    break
+
+                # Tests failed - analyze and generate bugfix tasks
+                logger.warning(f"Tests failed on iteration {iteration + 1}")
+
+                if iteration < max_iterations - 1:
+                    # Generate bugfix tasks
+                    new_bugfix_tasks = self.self_correction_manager.analyze_test_failures(
+                        test_output=test_output,
+                        original_task_id=f"integrate_{iteration}"
+                    )
+                    bugfix_tasks.extend(new_bugfix_tasks)
+
+                    logger.info(f"Generated {len(new_bugfix_tasks)} bugfix tasks for iteration {iteration + 1}")
+
+                    # In a real system, these tasks would be sent to workers
+                    # For now, we simulate the correction by noting the issues
+                    # In production: dispatch tasks, wait for results, merge again
+
+                iteration += 1
+
+            # Step 4: Prepare response
+            # iteration is 0-indexed, so add 1 to get actual count
+            actual_iterations = iteration + 1 if test_passed else iteration
+
+            integration_data = {
+                "success": test_passed,
+                "iterations": actual_iterations,
+                "code_file": target_file,
+                "test_output": test_output,
+                "merged_code_length": len(merged_code),
+                "bugfix_tasks_generated": len(bugfix_tasks),
+                "bugfix_tasks": [task.to_strict_json() for task in bugfix_tasks]
+            }
+
+            if test_file_path:
+                integration_data["test_file"] = test_file_path
+
+            if test_passed:
+                logger.info(
+                    f"Integration successful after {iteration} iteration(s), "
+                    f"generated {len(bugfix_tasks)} bugfix tasks total"
+                )
+                return AgentResponse(
+                    success=True,
+                    data=integration_data,
+                    metadata={"agent_id": self.agent_id, "phase": "integrate_and_test"}
+                )
+            else:
+                error = AgentError(
+                    error_type="tests_failed",
+                    message=f"Tests failed after {max_iterations} iterations",
+                    timestamp=datetime.utcnow(),
+                    context={
+                        "iterations": iteration,
+                        "bugfix_tasks_count": len(bugfix_tasks),
+                        "last_output": test_output[:500]  # First 500 chars
+                    },
+                    recoverable=True
+                )
+                logger.error(f"Integration failed: {error}")
+                return AgentResponse(
+                    success=False,
+                    error=error,
+                    data=integration_data
+                )
+
+        except Exception as e:
+            error = AgentError(
+                error_type="integration_error",
+                message=str(e),
+                timestamp=datetime.utcnow(),
+                context={"worker_results_count": len(worker_results)},
+                recoverable=False
+            )
+            logger.error(f"Error during integration: {error}")
+            return AgentResponse(success=False, error=error)
+
+    def _merge_worker_results(self, worker_results: List[Dict[str, Any]]) -> str:
+        """
+        Merge code snippets from multiple worker results.
+
+        Args:
+            worker_results: List of worker execution results
+
+        Returns:
+            Merged code as string
+        """
+        code_parts = []
+
+        for idx, result in enumerate(worker_results):
+            # Extract code from result
+            code = result.get("code", result.get("output", ""))
+
+            if code:
+                # Add comment separator
+                code_parts.append(f"# ===== Worker {idx + 1} Output =====\n")
+                code_parts.append(code)
+                code_parts.append("\n\n")
+
+        merged = "".join(code_parts)
+        logger.debug(f"Merged {len(worker_results)} worker results into {len(merged)} chars")
+
+        return merged
+
+    def _run_tests(
+        self,
+        code_file: str,
+        test_file: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Run pytest on generated code.
+
+        Executes tests in isolated subprocess for safety.
+
+        Args:
+            code_file: Path to generated code file
+            test_file: Optional path to test file
+
+        Returns:
+            Dictionary with 'success' (bool) and 'output' (str)
+        """
+        logger.info(f"Running tests on {code_file}...")
+
+        try:
+            # Determine test target
+            if test_file:
+                test_target = test_file
+            else:
+                # If no test file specified, try to run pytest on the code file
+                # This assumes the code file contains test functions
+                test_target = code_file
+
+            # Build pytest command
+            cmd = [
+                "python", "-m", "pytest",
+                test_target,
+                "-v",  # Verbose
+                "--tb=short",  # Short traceback
+                "--no-header",  # No header
+                "--color=no"  # No color codes
+            ]
+
+            # Run pytest in subprocess
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=30,  # 30 second timeout
+                cwd=os.path.dirname(code_file) or "."
+            )
+
+            # Combine stdout and stderr
+            output = result.stdout + "\n" + result.stderr
+
+            # pytest returns 0 on success, non-zero on failure
+            success = result.returncode == 0
+
+            logger.info(f"Test result: {'PASS' if success else 'FAIL'} (return code: {result.returncode})")
+
+            return {
+                "success": success,
+                "output": output,
+                "return_code": result.returncode
+            }
+
+        except subprocess.TimeoutExpired:
+            logger.error("Test execution timed out")
+            return {
+                "success": False,
+                "output": "ERROR: Test execution timed out after 30 seconds",
+                "return_code": -1
+            }
+        except Exception as e:
+            logger.error(f"Error running tests: {e}")
+            return {
+                "success": False,
+                "output": f"ERROR: Failed to run tests: {str(e)}",
+                "return_code": -1
+            }
 
     def __repr__(self) -> str:
         return (
