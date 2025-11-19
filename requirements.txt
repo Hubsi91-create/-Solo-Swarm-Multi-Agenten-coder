@@ -5,6 +5,11 @@ pydantic>=2.5.0
 fastapi>=0.104.0
 uvicorn>=0.24.0
 
+# Database
+sqlalchemy>=2.0.0
+aiosqlite>=0.19.0
+# asyncpg>=0.29.0  # For PostgreSQL (production)
+
 # Queue and Worker Management
 redis>=5.0.0
 rq>=1.15.0
@@ -13,6 +18,7 @@ rq>=1.15.0
 pytest>=7.4.0
 pytest-cov>=4.1.0
 pytest-asyncio>=0.21.0
+httpx>=0.25.0  # For FastAPI TestClient
 
 # Future Dependencies (to be added)
 # anthropic>=0.7.0  # Will be added when integrating Anthropic SDK
