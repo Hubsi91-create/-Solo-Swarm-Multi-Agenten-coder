@@ -390,11 +390,12 @@ function createApprovalCard(approval) {
     const template = document.getElementById('approval-card-template');
     const card = template.content.cloneNode(true).querySelector('.approval-card');
 
-    card.dataset.taskId = approval.task_id;
-    card.querySelector('.approval-type').textContent = approval.task_type;
-    card.querySelector('.approval-priority').textContent = 'HIGH';
-    card.querySelector('.approval-title').textContent = approval.task_id;
-    card.querySelector('.approval-description').textContent = approval.description;
+    card.dataset.taskId = approval.task_id || approval.cycle_id;
+    card.querySelector('.approval-type').textContent = approval.task_type || approval.report_type || 'REVIEW';
+    card.querySelector('.approval-priority').textContent = approval.severity || 'HIGH';
+    card.querySelector('.approval-title').textContent = approval.cycle_id || approval.task_id;
+    card.querySelector('.approval-description').textContent =
+        approval.description || `Closed Loop cycle requires manual review (confidence: ${approval.confidence_score?.toFixed(1)}%)`;
 
     // Metadata
     if (approval.metadata) {
@@ -402,15 +403,32 @@ function createApprovalCard(approval) {
             .map(([k, v]) => `${k}: ${v}`)
             .join(' | ');
         card.querySelector('.approval-metadata').textContent = metadataText;
+    } else if (approval.test_results) {
+        // Show summary for closed loop approvals
+        const testResults = approval.test_results;
+        card.querySelector('.approval-metadata').textContent =
+            `Tests: ${testResults.all_tests_passed ? '✅' : '❌'} | Coverage: ${testResults.avg_coverage?.toFixed(1)}%`;
     }
 
-    // Button handlers
-    card.querySelector('.btn-approve').addEventListener('click', () => {
-        handleApproval(approval.task_id, true);
+    // Click card to open modal with full details
+    card.style.cursor = 'pointer';
+    card.addEventListener('click', (e) => {
+        // Don't open modal if clicking buttons
+        if (e.target.closest('.btn-approve') || e.target.closest('.btn-reject')) {
+            return;
+        }
+        openApprovalModal(approval);
     });
 
-    card.querySelector('.btn-reject').addEventListener('click', () => {
-        handleApproval(approval.task_id, false);
+    // Button handlers - for quick approval without opening modal
+    card.querySelector('.btn-approve').addEventListener('click', (e) => {
+        e.stopPropagation();
+        handleApproval(approval.task_id || approval.cycle_id, true);
+    });
+
+    card.querySelector('.btn-reject').addEventListener('click', (e) => {
+        e.stopPropagation();
+        handleApproval(approval.task_id || approval.cycle_id, false);
     });
 
     return card;
@@ -569,8 +587,220 @@ function setupEventListeners() {
         addLog('system', 'Log cleared');
     });
 
+    // Modal close button
+    document.getElementById('modal-close').addEventListener('click', closeApprovalModal);
+
+    // Modal overlay click to close
+    document.querySelector('.modal-overlay').addEventListener('click', closeApprovalModal);
+
+    // Test output collapsible toggle
+    document.getElementById('test-output-toggle').addEventListener('click', function() {
+        const output = document.getElementById('modal-test-output');
+        const isHidden = output.style.display === 'none';
+        output.style.display = isHidden ? 'block' : 'none';
+        this.classList.toggle('open', isHidden);
+    });
+
+    // Modal approve button
+    document.getElementById('modal-approve-btn').addEventListener('click', handleModalApprove);
+
+    // Modal reject button
+    document.getElementById('modal-reject-btn').addEventListener('click', handleModalReject);
+
     // Refresh data periodically
     setInterval(refreshStats, 30000); // Every 30 seconds
+}
+
+// ===== APPROVAL MODAL =====
+
+let currentApprovalData = null;
+
+function openApprovalModal(approvalData) {
+    currentApprovalData = approvalData;
+    const modal = document.getElementById('approval-modal');
+
+    // Populate modal with data
+    document.getElementById('modal-cycle-id').textContent = approvalData.cycle_id || '-';
+    document.getElementById('modal-report-type').textContent = approvalData.report_type || '-';
+    document.getElementById('modal-severity').textContent = approvalData.severity || '-';
+    document.getElementById('modal-confidence').textContent =
+        approvalData.confidence_score ? `${approvalData.confidence_score.toFixed(1)}%` : '-';
+
+    // Test results
+    const testResults = approvalData.test_results || {};
+    document.getElementById('modal-tests-passed').textContent =
+        testResults.all_tests_passed ? '✅ Yes' : '❌ No';
+    document.getElementById('modal-coverage').textContent =
+        testResults.avg_coverage ? `${testResults.avg_coverage.toFixed(1)}%` : '-';
+    document.getElementById('modal-iterations').textContent =
+        testResults.iterations || '1';
+
+    // Changes
+    const changesEl = document.getElementById('modal-changes');
+    if (approvalData.changes && approvalData.changes.length > 0) {
+        const changesList = document.createElement('ul');
+        approvalData.changes.forEach(file => {
+            const li = document.createElement('li');
+            li.textContent = file;
+            changesList.appendChild(li);
+        });
+        changesEl.innerHTML = '';
+        changesEl.appendChild(changesList);
+    } else {
+        changesEl.innerHTML = '<p class="text-muted">No changes detected</p>';
+    }
+
+    // Reason for review
+    const reasonList = document.getElementById('modal-reason-list');
+    reasonList.innerHTML = '';
+
+    const reasons = [];
+    if (approvalData.confidence_score < 90) {
+        reasons.push(`Confidence score (${approvalData.confidence_score.toFixed(1)}%) is below threshold (90%)`);
+    }
+    if (testResults.avg_coverage < 80) {
+        reasons.push(`Test coverage (${testResults.avg_coverage?.toFixed(1)}%) is below minimum (80%)`);
+    }
+    if (!testResults.all_tests_passed) {
+        reasons.push('Some tests failed during validation');
+    }
+
+    reasons.forEach(reason => {
+        const li = document.createElement('li');
+        li.textContent = reason;
+        reasonList.appendChild(li);
+    });
+
+    // Test output
+    const testOutput = approvalData.test_output || testResults.test_output_snippet || 'No test output available';
+    document.getElementById('modal-test-output-code').textContent = testOutput;
+
+    // Show modal
+    modal.style.display = 'flex';
+    addLog('info', `Opened approval modal for cycle ${approvalData.cycle_id}`);
+}
+
+function closeApprovalModal() {
+    const modal = document.getElementById('approval-modal');
+    modal.style.display = 'none';
+    currentApprovalData = null;
+
+    // Reset collapsible
+    const output = document.getElementById('modal-test-output');
+    const toggle = document.getElementById('test-output-toggle');
+    output.style.display = 'none';
+    toggle.classList.remove('open');
+}
+
+async function handleModalApprove() {
+    if (!currentApprovalData) return;
+
+    const cycleId = currentApprovalData.cycle_id;
+    const taskId = currentApprovalData.task_id || cycleId;
+
+    try {
+        addLog('info', `Approving cycle ${cycleId}...`);
+
+        const response = await fetch(`${CONFIG.API_URL}/approval/${taskId}`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                action: 'approve',
+                cycle_id: cycleId
+            })
+        });
+
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
+
+        const result = await response.json();
+
+        addLog('success', `✅ Cycle ${cycleId} approved and merged`);
+        closeApprovalModal();
+
+        // Remove from approval queue
+        removeApprovalFromQueue(taskId);
+
+    } catch (error) {
+        console.error('Error approving cycle:', error);
+        addLog('error', `Failed to approve cycle: ${error.message}`);
+        alert(`Failed to approve: ${error.message}`);
+    }
+}
+
+async function handleModalReject() {
+    if (!currentApprovalData) return;
+
+    const cycleId = currentApprovalData.cycle_id;
+    const taskId = currentApprovalData.task_id || cycleId;
+
+    try {
+        addLog('warning', `Rejecting cycle ${cycleId}...`);
+
+        const response = await fetch(`${CONFIG.API_URL}/approval/${taskId}`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                action: 'reject',
+                cycle_id: cycleId
+            })
+        });
+
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
+
+        const result = await response.json();
+
+        addLog('warning', `❌ Cycle ${cycleId} rejected`);
+        closeApprovalModal();
+
+        // Remove from approval queue
+        removeApprovalFromQueue(taskId);
+
+    } catch (error) {
+        console.error('Error rejecting cycle:', error);
+        addLog('error', `Failed to reject cycle: ${error.message}`);
+        alert(`Failed to reject: ${error.message}`);
+    }
+}
+
+function removeApprovalFromQueue(taskId) {
+    // Find and remove the approval card
+    const card = document.querySelector(`.approval-card[data-task-id="${taskId}"]`);
+    if (card) {
+        card.remove();
+    }
+
+    // Update state
+    state.approvals = state.approvals.filter(a => (a.task_id || a.cycle_id) !== taskId);
+
+    // Update count
+    updateApprovalCount();
+
+    // Show empty state if no approvals left
+    if (state.approvals.length === 0) {
+        showEmptyApprovalState();
+    }
+}
+
+function updateApprovalCount() {
+    document.getElementById('approval-count').textContent = state.approvals.length;
+}
+
+function showEmptyApprovalState() {
+    const queue = document.getElementById('approval-queue');
+    queue.innerHTML = `
+        <div class="empty-state">
+            <div class="empty-icon">✓</div>
+            <p>No pending approvals</p>
+        </div>
+    `;
 }
 
 // ===== EXPORTS (for testing) =====

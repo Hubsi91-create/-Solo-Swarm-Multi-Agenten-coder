@@ -46,9 +46,11 @@ logger = logging.getLogger(__name__)
 # Pydantic Models for API Requests/Responses
 class ApprovalRequest(BaseModel):
     """Request model for task approval"""
-    approved: bool = Field(..., description="Whether to approve (True) or reject (False)")
+    approved: bool = Field(None, description="Whether to approve (True) or reject (False) - legacy field")
+    action: Optional[str] = Field(None, description="Action: 'approve' or 'reject'")
     comment: Optional[str] = Field(None, description="Optional approval comment")
-    approved_by: str = Field(..., description="Username of approver")
+    approved_by: str = Field(default="dashboard_user", description="Username of approver")
+    cycle_id: Optional[str] = Field(None, description="Closed Loop cycle ID (if applicable)")
 
 
 class AgentStatus(BaseModel):
@@ -360,13 +362,17 @@ async def approve_task(
     session: AsyncSession = Depends(get_session)
 ):
     """
-    Approve or reject a task that requires human approval.
+    Approve or reject a task or Closed Loop cycle that requires human approval.
 
-    Updates the task's approval status and broadcasts the decision
+    This endpoint handles two types of approvals:
+    1. Standard task approvals - updates AgentTaskModel in database
+    2. Closed Loop cycle approvals - updates approval request and notifies ClosedLoopManager
+
+    Updates the approval status and broadcasts the decision
     to all connected dashboard clients.
 
     Args:
-        task_id: Task identifier
+        task_id: Task identifier or Closed Loop cycle ID
         approval: Approval decision and metadata
         session: Database session
 
@@ -376,6 +382,26 @@ async def approve_task(
     Raises:
         HTTPException: If task not found or doesn't require approval
     """
+    # Determine approval action (support both 'approved' field and 'action' field)
+    if approval.action:
+        approved = approval.action == 'approve'
+    elif approval.approved is not None:
+        approved = approval.approved
+    else:
+        raise HTTPException(status_code=400, detail="Must provide either 'action' or 'approved' field")
+
+    # Check if this is a Closed Loop cycle approval
+    if approval.cycle_id or task_id.startswith('loop_'):
+        return await handle_closed_loop_approval(
+            task_id=task_id,
+            cycle_id=approval.cycle_id or task_id,
+            approved=approved,
+            approved_by=approval.approved_by,
+            comment=approval.comment,
+            session=session
+        )
+
+    # Standard task approval flow
     # Find task
     result = await session.execute(
         select(AgentTaskModel).where(AgentTaskModel.task_id == task_id)
@@ -395,7 +421,7 @@ async def approve_task(
     task.approved_by = approval.approved_by
     task.approved_at = datetime.utcnow()
 
-    if approval.approved:
+    if approved:
         task.status = "approved"
     else:
         task.status = "rejected"
@@ -408,22 +434,121 @@ async def approve_task(
             task_id=task_id,
             status=task.status,
             details={
-                "approved": approval.approved,
+                "approved": approved,
                 "approved_by": approval.approved_by,
                 "comment": approval.comment
             }
         )
 
     logger.info(
-        f"Task {task_id} {'approved' if approval.approved else 'rejected'} "
+        f"Task {task_id} {'approved' if approved else 'rejected'} "
         f"by {approval.approved_by}"
     )
 
     return {
         "task_id": task_id,
-        "approved": approval.approved,
+        "approved": approved,
         "approved_by": approval.approved_by,
         "approved_at": task.approved_at.isoformat()
+    }
+
+
+async def handle_closed_loop_approval(
+    task_id: str,
+    cycle_id: str,
+    approved: bool,
+    approved_by: str,
+    comment: Optional[str],
+    session: AsyncSession
+):
+    """
+    Handle approval/rejection of a Closed Loop QA cycle.
+
+    This creates an approval record in the database and sets a flag that
+    the ClosedLoopManager can check.
+
+    Args:
+        task_id: Task/cycle identifier
+        cycle_id: Closed Loop cycle ID
+        approved: Whether approved or rejected
+        approved_by: Username of approver
+        comment: Optional comment
+        session: Database session
+
+    Returns:
+        Dict with approval result
+    """
+    from infrastructure.database import ApprovalRequestModel
+
+    logger.info(
+        f"📋 Closed Loop cycle {cycle_id} {'approved' if approved else 'rejected'} "
+        f"by {approved_by}"
+    )
+
+    # Find or create approval request
+    result = await session.execute(
+        select(ApprovalRequestModel).where(
+            ApprovalRequestModel.cycle_id == cycle_id
+        )
+    )
+    approval_request = result.scalar_one_or_none()
+
+    if not approval_request:
+        # Create new approval request record
+        approval_request = ApprovalRequestModel(
+            cycle_id=cycle_id,
+            request_type="closed_loop_qa",
+            status="pending",
+            created_at=datetime.utcnow()
+        )
+        session.add(approval_request)
+
+    # Update approval status
+    approval_request.approved_by = approved_by
+    approval_request.approved_at = datetime.utcnow()
+    approval_request.comment = comment
+
+    if approved:
+        approval_request.status = "approved"
+    else:
+        approval_request.status = "rejected"
+
+    await session.commit()
+
+    # Broadcast update via WebSocket
+    if dashboard_manager:
+        await dashboard_manager.broadcast(
+            DashboardUpdate(
+                update_type=UpdateType.SYSTEM_STATUS,
+                priority=1,
+                data={
+                    "event": "closed_loop_approval",
+                    "cycle_id": cycle_id,
+                    "approved": approved,
+                    "approved_by": approved_by,
+                    "comment": comment,
+                    "timestamp": datetime.utcnow().isoformat()
+                }
+            )
+        )
+
+    # TODO: Notify ClosedLoopManager about approval
+    # For now, the manager will poll the database for approval status
+    # In a more advanced implementation, we could use a callback queue or event system
+
+    logger.info(
+        f"✅ Closed Loop approval recorded: cycle={cycle_id}, "
+        f"approved={approved}, by={approved_by}"
+    )
+
+    return {
+        "task_id": task_id,
+        "cycle_id": cycle_id,
+        "approved": approved,
+        "approved_by": approved_by,
+        "approved_at": approval_request.approved_at.isoformat(),
+        "type": "closed_loop",
+        "message": f"Cycle {'approved and will be merged' if approved else 'rejected and will not be merged'}"
     }
 
 
