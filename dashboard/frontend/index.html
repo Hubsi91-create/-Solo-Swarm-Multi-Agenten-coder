@@ -148,6 +148,97 @@
         <div class="tooltip-content"></div>
     </div>
 
+    <!-- Approval Modal -->
+    <div class="modal" id="approval-modal" style="display: none;">
+        <div class="modal-overlay"></div>
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 class="modal-title" id="modal-title">Review & Approve</h2>
+                <button class="modal-close" id="modal-close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <!-- Cycle Information -->
+                <div class="modal-section">
+                    <h3>Cycle Information</h3>
+                    <div class="info-grid">
+                        <div class="info-item">
+                            <span class="info-label">Cycle ID:</span>
+                            <span class="info-value" id="modal-cycle-id">-</span>
+                        </div>
+                        <div class="info-item">
+                            <span class="info-label">Report Type:</span>
+                            <span class="info-value" id="modal-report-type">-</span>
+                        </div>
+                        <div class="info-item">
+                            <span class="info-label">Severity:</span>
+                            <span class="info-value badge" id="modal-severity">-</span>
+                        </div>
+                        <div class="info-item">
+                            <span class="info-label">Confidence:</span>
+                            <span class="info-value" id="modal-confidence">-</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Test Results -->
+                <div class="modal-section">
+                    <h3>Test Results</h3>
+                    <div class="test-results" id="modal-test-results">
+                        <div class="test-item">
+                            <span class="test-label">Tests Passed:</span>
+                            <span class="test-value" id="modal-tests-passed">-</span>
+                        </div>
+                        <div class="test-item">
+                            <span class="test-label">Coverage:</span>
+                            <span class="test-value" id="modal-coverage">-</span>
+                        </div>
+                        <div class="test-item">
+                            <span class="test-label">Iterations:</span>
+                            <span class="test-value" id="modal-iterations">-</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Changes & Diff -->
+                <div class="modal-section">
+                    <h3>Changes</h3>
+                    <div class="changes-list" id="modal-changes">
+                        <p class="text-muted">No changes detected</p>
+                    </div>
+                </div>
+
+                <!-- Reason for Review -->
+                <div class="modal-section">
+                    <h3>Reason for Manual Review</h3>
+                    <div class="review-reason" id="modal-reason">
+                        <p>This cycle requires manual review because:</p>
+                        <ul id="modal-reason-list"></ul>
+                    </div>
+                </div>
+
+                <!-- Test Output (Collapsible) -->
+                <div class="modal-section">
+                    <h3>
+                        <button class="collapsible-toggle" id="test-output-toggle">
+                            Test Output <span class="toggle-icon">▼</span>
+                        </button>
+                    </h3>
+                    <div class="test-output" id="modal-test-output" style="display: none;">
+                        <pre><code id="modal-test-output-code">No test output available</code></pre>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" id="modal-reject-btn">
+                    <span class="btn-icon">✗</span> Reject
+                </button>
+                <button class="btn btn-primary" id="modal-approve-btn">
+                    <span class="btn-icon">✓</span> Approve & Merge
+                </button>
+            </div>
+        </div>
+    </div>
+
     <!-- Scripts -->
     <script src="app.js"></script>
 </body>
