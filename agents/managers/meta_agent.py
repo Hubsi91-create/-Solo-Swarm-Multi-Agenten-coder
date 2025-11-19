@@ -27,6 +27,7 @@ from core.agent_framework import BaseAgent, AgentResponse, AgentError
 from core.tdf_schema import TaskDefinition, TaskType
 from core.token_tracker import TokenTracker, ModelType
 from core.thinking_budget import ThinkingBudgetAllocator
+from core.prompt_manager import PromptManager
 
 
 logger = logging.getLogger(__name__)
@@ -77,7 +78,8 @@ class MetaAgent(BaseAgent):
         agent_name: str = "MetaAgent",
         config: Optional[Dict[str, Any]] = None,
         token_tracker: Optional[TokenTracker] = None,
-        db_session: Optional[Any] = None
+        db_session: Optional[Any] = None,
+        prompt_manager: Optional[PromptManager] = None
     ):
         """
         Initialize the Meta-Agent.
@@ -88,12 +90,18 @@ class MetaAgent(BaseAgent):
             config: Configuration dictionary
             token_tracker: Token usage tracker
             db_session: Database session for metrics queries
+            prompt_manager: PromptManager for version control (genetic memory)
         """
         super().__init__(agent_id, agent_name, config)
 
         self.token_tracker = token_tracker or TokenTracker()
         self.db_session = db_session
         self.thinking_allocator = ThinkingBudgetAllocator()
+
+        # Prompt version control (genetic memory)
+        self.prompt_manager = prompt_manager or PromptManager(db_session)
+        if db_session and not prompt_manager:
+            self.prompt_manager.set_session(db_session)
 
         # Meta-agent configuration
         self.model = ModelType.SONNET_3_5  # Needs high intelligence
@@ -102,13 +110,18 @@ class MetaAgent(BaseAgent):
         self.improvement_target = self.config.get("improvement_target", 0.10)  # +10% target
         self.shadow_test_count = self.config.get("shadow_test_count", 10)  # Test on 10 historical tasks
 
+        # Rollback configuration
+        self.auto_rollback_enabled = self.config.get("auto_rollback_enabled", True)
+        self.rollback_threshold = self.config.get("rollback_threshold", 0.10)  # -10% triggers rollback
+
         # Performance tracking
         self.agent_metrics: Dict[str, Dict[str, Any]] = {}
         self.optimization_history: List[Dict[str, Any]] = []
 
         logger.info(
             f"MetaAgent initialized: {agent_name} (ID: {agent_id}), "
-            f"model: {self.model}, success threshold: {self.success_threshold}"
+            f"model: {self.model}, success threshold: {self.success_threshold}, "
+            f"genetic memory: {'✅' if self.prompt_manager else '❌'}"
         )
 
     def gather_context(self, task: TaskDefinition) -> AgentResponse:
@@ -707,7 +720,7 @@ class MetaAgent(BaseAgent):
             "monitoring_timestamp": datetime.utcnow().isoformat()
         }
 
-    def optimize_prompts(self, agent_type: str) -> Dict[str, Any]:
+    async def optimize_prompts(self, agent_type: str) -> Dict[str, Any]:
         """
         High-level method to optimize prompts for a specific agent.
 
@@ -716,13 +729,13 @@ class MetaAgent(BaseAgent):
         2. Generate variants
         3. Shadow test
         4. Select best
-        5. (Ready for deployment)
+        5. Deploy to PromptManager (Genetic Memory)
 
         Args:
             agent_type: Type of agent to optimize
 
         Returns:
-            Optimization results
+            Optimization results including deployment status
         """
         logger.info(f"🚀 Starting prompt optimization for {agent_type}...")
 
@@ -753,6 +766,178 @@ class MetaAgent(BaseAgent):
         # Phase 3: Validate through shadow testing
         verify_response = self.verify_work(task, action_response.data)
         if not verify_response.success:
-            return {"error": str(action_response.error)}
+            return {"error": str(verify_response.error)}
 
-        return verify_response.data
+        # Phase 4: Deploy successful optimizations to Genetic Memory
+        deployment_results = []
+
+        validated_optimizations = verify_response.data.get("validated_optimizations", [])
+
+        for opt in validated_optimizations:
+            if opt.get("ready_for_deployment"):
+                try:
+                    deployment = await self._deploy_optimization(opt)
+                    deployment_results.append(deployment)
+                except Exception as e:
+                    logger.error(f"Failed to deploy optimization for {opt['agent_type']}: {e}")
+                    deployment_results.append({
+                        "agent_type": opt["agent_type"],
+                        "deployed": False,
+                        "error": str(e)
+                    })
+
+        return {
+            **verify_response.data,
+            "deployments": deployment_results,
+            "total_deployed": sum(1 for d in deployment_results if d.get("deployed", False))
+        }
+
+    async def _deploy_optimization(self, optimization: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Deploy a validated optimization to the PromptManager.
+
+        This saves the new prompt version to the genetic memory database.
+
+        Args:
+            optimization: Validated optimization with best variant
+
+        Returns:
+            Deployment result
+        """
+        agent_type = optimization["agent_type"]
+        best_variant = optimization["best_variant"]
+
+        if not best_variant:
+            return {
+                "agent_type": agent_type,
+                "deployed": False,
+                "reason": "No best variant selected"
+            }
+
+        logger.info(f"🧬 Deploying optimized prompt for {agent_type} to genetic memory...")
+
+        # Calculate change reason
+        old_success_rate = optimization.get("original_success_rate", 0) * 100
+        new_success_rate = best_variant.get("success_rate", 0) * 100
+        improvement = new_success_rate - old_success_rate
+
+        change_reason = (
+            f"Meta-Agent optimization: {improvement:+.1f}% success rate improvement "
+            f"(from {old_success_rate:.1f}% to {new_success_rate:.1f}%)"
+        )
+
+        # Prepare performance metrics
+        performance_metrics = {
+            "performance_score": best_variant.get("performance_score", 0),
+            "success_rate": new_success_rate,
+            "avg_cost": best_variant.get("avg_cost"),
+            "avg_duration": best_variant.get("avg_duration")
+        }
+
+        # Prepare shadow test results
+        shadow_test_results = {
+            "test_count": best_variant.get("test_count", 0),
+            "success_rate": new_success_rate
+        }
+
+        # Deploy to PromptManager
+        new_version = await self.prompt_manager.update_prompt(
+            agent_type=agent_type,
+            new_content=best_variant.get("prompt_text", ""),
+            change_reason=change_reason,
+            changed_by=self.agent_id,
+            performance_metrics=performance_metrics,
+            shadow_test_results=shadow_test_results,
+            metadata={
+                "improvement_strategy": best_variant.get("strategy"),
+                "test_results": best_variant.get("test_results", {}),
+                "optimization_timestamp": datetime.utcnow().isoformat()
+            }
+        )
+
+        logger.info(
+            f"✅ Deployed version {new_version.version} for {agent_type} "
+            f"(improvement: {improvement:+.1f}%)"
+        )
+
+        return {
+            "agent_type": agent_type,
+            "deployed": True,
+            "version": new_version.version,
+            "improvement_percent": round(improvement, 1),
+            "new_success_rate": round(new_success_rate, 1),
+            "change_reason": change_reason
+        }
+
+    async def check_and_rollback_if_needed(self, agent_type: str) -> Optional[Dict[str, Any]]:
+        """
+        Check if an agent's performance has degraded and rollback if needed.
+
+        This is the "immune system" of the genetic memory - it detects bad
+        changes and reverts them automatically.
+
+        Args:
+            agent_type: Type of agent to check
+
+        Returns:
+            Rollback result if performed, None otherwise
+        """
+        if not self.auto_rollback_enabled:
+            logger.debug(f"Auto-rollback disabled for {agent_type}")
+            return None
+
+        logger.info(f"🔍 Checking {agent_type} for performance degradation...")
+
+        # Get current and previous versions
+        history = await self.prompt_manager.get_version_history(agent_type, limit=2)
+
+        if len(history) < 2:
+            logger.debug(f"Not enough version history for {agent_type}")
+            return None
+
+        current = history[0]
+        previous = history[1]
+
+        if not current.is_active:
+            logger.warning(f"Current version is not active for {agent_type}")
+            return None
+
+        # Check if performance has degraded
+        if not current.success_rate or not previous.success_rate:
+            logger.debug(f"Missing success rate data for {agent_type}")
+            return None
+
+        degradation = previous.success_rate - current.success_rate
+
+        if degradation >= self.rollback_threshold * 100:  # rollback_threshold is 0-1, success_rate is 0-100
+            logger.warning(
+                f"⚠️  Performance degradation detected for {agent_type}: "
+                f"-{degradation:.1f}% (threshold: {self.rollback_threshold * 100}%)"
+            )
+
+            # Perform rollback
+            rollback_result = await self.prompt_manager.rollback_prompt(
+                agent_type=agent_type,
+                target_version=previous.version,
+                reason=f"Automatic rollback due to {degradation:.1f}% performance degradation"
+            )
+
+            logger.info(
+                f"✅ Rolled back {agent_type} to version {previous.version} "
+                f"(recovered {degradation:.1f}% success rate)"
+            )
+
+            return {
+                "agent_type": agent_type,
+                "rolled_back": True,
+                "from_version": current.version,
+                "to_version": previous.version,
+                "degradation_percent": round(degradation, 1),
+                "reason": "automatic_performance_degradation"
+            }
+
+        logger.debug(
+            f"No rollback needed for {agent_type}: "
+            f"degradation {degradation:.1f}% < threshold {self.rollback_threshold * 100}%"
+        )
+        return None

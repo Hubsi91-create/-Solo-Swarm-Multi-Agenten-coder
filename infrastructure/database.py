@@ -169,6 +169,120 @@ class ValidationResultModel(Base):
         )
 
 
+class ApprovalRequestModel(Base):
+    """
+    Model for tracking approval requests from Closed Loop QA.
+
+    Stores approval requests that require human review,
+    including cycle details and approval decisions.
+    """
+    __tablename__ = "approval_requests"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+
+    # Cycle identification
+    cycle_id: Mapped[str] = mapped_column(String(100), unique=True, nullable=False, index=True)
+    request_type: Mapped[str] = mapped_column(String(50), nullable=False, default="closed_loop_qa")
+
+    # Request details
+    report_type: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    severity: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    confidence_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+
+    # Test results summary
+    tests_passed: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+    test_coverage: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    iterations: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
+    # Status
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending", index=True)
+    # Possible values: pending, approved, rejected
+
+    # Approval tracking
+    approved_by: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    approved_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    comment: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    # Metadata
+    metadata: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+
+    # Timestamps
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+
+    def __repr__(self) -> str:
+        return (
+            f"ApprovalRequestModel(id={self.id}, cycle_id='{self.cycle_id}', "
+            f"status='{self.status}')"
+        )
+
+
+class PromptVersionModel(Base):
+    """
+    Model for versioning system prompts - the "genetic memory" of agents.
+
+    Tracks prompt evolution over time, enabling rollback when performance degrades.
+    This is critical for the Meta-Agent's self-optimization capabilities.
+    """
+    __tablename__ = "prompt_versions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+
+    # Agent identification
+    agent_type: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    # Examples: "coder_agent", "qa_agent", "architect_agent", "meta_agent"
+
+    # Version tracking
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    # Version number (1, 2, 3, ...) - auto-incremented per agent_type
+
+    # Prompt content
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    # The actual prompt text (can be large)
+
+    # Change tracking
+    change_reason: Mapped[str] = mapped_column(Text, nullable=False)
+    # Why this version was created (e.g., "Meta-Agent optimization: +15% success rate")
+
+    changed_by: Mapped[str] = mapped_column(String(100), nullable=False, default="meta_agent")
+    # Who/what made the change (meta_agent, manual, initial)
+
+    # Performance metrics
+    performance_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    # Overall performance score (0-100) based on success rate, cost, duration
+
+    success_rate: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    # Percentage of successful tasks (0-100)
+
+    avg_cost: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    # Average cost per task in USD
+
+    avg_duration: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    # Average task duration in seconds
+
+    # Status
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, index=True)
+    # Only one version per agent_type should be active at a time
+
+    # Shadow testing results (before deployment)
+    shadow_test_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    shadow_test_success_rate: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+
+    # Timestamps
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+    activated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    deactivated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+    # Metadata
+    metadata: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    # Additional context (optimizer settings, test results, etc.)
+
+    def __repr__(self) -> str:
+        return (
+            f"PromptVersionModel(id={self.id}, agent='{self.agent_type}', "
+            f"version={self.version}, active={self.is_active})"
+        )
+
+
 class DatabaseManager:
     """
     Async Database Manager for Solo-Swarm System.

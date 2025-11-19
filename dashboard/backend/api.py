@@ -36,8 +36,10 @@ from infrastructure.database import (
     AgentTaskModel,
     CostLogModel,
     ValidationResultModel,
+    PromptVersionModel,
     get_db_session
 )
+from core.prompt_manager import PromptManager
 
 
 logger = logging.getLogger(__name__)
@@ -120,12 +122,13 @@ app.add_middleware(
 # Global instances (will be initialized on startup)
 dashboard_manager: Optional[DashboardManager] = None
 db_manager: Optional[DatabaseManager] = None
+prompt_manager: Optional[PromptManager] = None
 
 
 @app.on_event("startup")
 async def startup_event():
     """Initialize dashboard manager and database on startup."""
-    global dashboard_manager, db_manager
+    global dashboard_manager, db_manager, prompt_manager
 
     dashboard_manager = DashboardManager()
     logger.info("Dashboard manager initialized")
@@ -137,6 +140,10 @@ async def startup_event():
     db_manager = DatabaseManager(database_url, echo=False)
     await db_manager.initialize()
     logger.info(f"Database initialized: {database_url}")
+
+    # Initialize PromptManager (genetic memory)
+    prompt_manager = PromptManager()
+    logger.info("PromptManager initialized (genetic memory ready)")
 
 
 @app.on_event("shutdown")
@@ -715,6 +722,186 @@ async def get_stats(
         "validations": validation_stats,
         "websocket": ws_stats
     }
+
+
+# ===== PROMPT VERSIONING ENDPOINTS (Genetic Memory / Brain) =====
+
+@app.get("/api/prompts/{agent_type}/history")
+async def get_prompt_history(
+    agent_type: str,
+    limit: int = Query(20, ge=1, le=100, description="Maximum versions to return"),
+    session: AsyncSession = Depends(get_session)
+):
+    """
+    Get version history for an agent's prompts (Genetic Memory).
+
+    This shows the evolution of the agent's "brain" over time.
+
+    Args:
+        agent_type: Type of agent (e.g., "coder_agent", "qa_agent")
+        limit: Maximum number of versions to return
+        session: Database session
+
+    Returns:
+        List of prompt versions with performance metrics
+    """
+    # Set session for prompt manager
+    if prompt_manager:
+        prompt_manager.set_session(session)
+
+        history = await prompt_manager.get_version_history(agent_type, limit)
+
+        return {
+            "agent_type": agent_type,
+            "total_versions": len(history),
+            "versions": [
+                {
+                    "version": v.version,
+                    "change_reason": v.change_reason,
+                    "changed_by": v.changed_by,
+                    "is_active": v.is_active,
+                    "performance_score": v.performance_score,
+                    "success_rate": v.success_rate,
+                    "avg_cost": v.avg_cost,
+                    "avg_duration": v.avg_duration,
+                    "shadow_test_count": v.shadow_test_count,
+                    "shadow_test_success_rate": v.shadow_test_success_rate,
+                    "created_at": v.created_at.isoformat(),
+                    "activated_at": v.activated_at.isoformat() if v.activated_at else None,
+                    "deactivated_at": v.deactivated_at.isoformat() if v.deactivated_at else None,
+                    "metadata": v.metadata
+                }
+                for v in history
+            ]
+        }
+    else:
+        raise HTTPException(status_code=500, detail="PromptManager not initialized")
+
+
+@app.get("/api/prompts/{agent_type}/current")
+async def get_current_prompt(
+    agent_type: str,
+    session: AsyncSession = Depends(get_session)
+):
+    """
+    Get the currently active prompt for an agent.
+
+    Args:
+        agent_type: Type of agent
+        session: Database session
+
+    Returns:
+        Current prompt details
+    """
+    if prompt_manager:
+        prompt_manager.set_session(session)
+
+        prompt_text = await prompt_manager.get_current_prompt(agent_type)
+
+        if prompt_text:
+            # Get version details
+            history = await prompt_manager.get_version_history(agent_type, limit=1)
+            current = history[0] if history else None
+
+            return {
+                "agent_type": agent_type,
+                "version": current.version if current else None,
+                "prompt": prompt_text,
+                "performance_score": current.performance_score if current else None,
+                "success_rate": current.success_rate if current else None,
+                "activated_at": current.activated_at.isoformat() if current and current.activated_at else None
+            }
+        else:
+            return {
+                "agent_type": agent_type,
+                "version": None,
+                "prompt": None,
+                "message": "No active prompt version found"
+            }
+    else:
+        raise HTTPException(status_code=500, detail="PromptManager not initialized")
+
+
+@app.post("/api/prompts/{agent_type}/rollback")
+async def rollback_prompt(
+    agent_type: str,
+    target_version: int = Query(..., description="Version to rollback to"),
+    reason: str = Query(default="Manual rollback via dashboard", description="Reason for rollback"),
+    session: AsyncSession = Depends(get_session)
+):
+    """
+    Rollback an agent's prompt to a previous version.
+
+    This is the manual override for the genetic memory system.
+
+    Args:
+        agent_type: Type of agent
+        target_version: Version number to rollback to
+        reason: Reason for rollback
+        session: Database session
+
+    Returns:
+        Rollback result
+    """
+    if not prompt_manager:
+        raise HTTPException(status_code=500, detail="PromptManager not initialized")
+
+    prompt_manager.set_session(session)
+
+    try:
+        rollback_result = await prompt_manager.rollback_prompt(
+            agent_type=agent_type,
+            target_version=target_version,
+            reason=reason
+        )
+
+        logger.info(
+            f"Manual rollback performed: {agent_type} v{rollback_result.version} "
+            f"by dashboard user"
+        )
+
+        return {
+            "success": True,
+            "agent_type": agent_type,
+            "rolled_back_to_version": rollback_result.version,
+            "reason": reason,
+            "performance_score": rollback_result.performance_score,
+            "success_rate": rollback_result.success_rate,
+            "activated_at": rollback_result.activated_at.isoformat()
+        }
+
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error during rollback: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Rollback failed: {str(e)}")
+
+
+@app.get("/api/prompts/{agent_type}/comparison")
+async def get_performance_comparison(
+    agent_type: str,
+    session: AsyncSession = Depends(get_session)
+):
+    """
+    Get performance comparison across prompt versions.
+
+    Shows which versions performed best and identifies trends.
+
+    Args:
+        agent_type: Type of agent
+        session: Database session
+
+    Returns:
+        Performance comparison data
+    """
+    if not prompt_manager:
+        raise HTTPException(status_code=500, detail="PromptManager not initialized")
+
+    prompt_manager.set_session(session)
+
+    comparison = await prompt_manager.get_performance_comparison(agent_type)
+
+    return comparison
 
 
 # For development/testing
